@@ -13,11 +13,27 @@ import re
 from typing import Any
 
 import streamlit as st
-from docx import Document
-from google import genai
-from google.genai import errors as genai_errors
-from google.genai import types
-from pypdf import PdfReader
+
+# Third-party libraries are imported defensively. If Streamlit Cloud did not install
+# requirements.txt, the app shows a clear message instead of a redacted crash.
+MISSING_PACKAGES: list[str] = []
+try:
+    from docx import Document  # provided by the "python-docx" package
+except ImportError:
+    Document = None
+    MISSING_PACKAGES.append("python-docx")
+try:
+    from pypdf import PdfReader
+except ImportError:
+    PdfReader = None
+    MISSING_PACKAGES.append("pypdf")
+try:
+    from google import genai
+    from google.genai import errors as genai_errors
+    from google.genai import types
+except ImportError:
+    genai = genai_errors = types = None
+    MISSING_PACKAGES.append("google-genai")
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -56,6 +72,8 @@ def extract_text(filename: str, data: bytes) -> str:
     ext = os.path.splitext(filename.lower())[1]
 
     if ext == ".pdf":
+        if PdfReader is None:
+            raise ResumeError("PDF support is not installed (missing 'pypdf'). Upload a DOCX or TXT instead.")
         try:
             reader = PdfReader(io.BytesIO(data))
             if reader.is_encrypted and not reader.decrypt(""):
@@ -66,6 +84,8 @@ def extract_text(filename: str, data: bytes) -> str:
         except Exception as exc:  # corrupt / unsupported PDF
             raise ResumeError("Could not read this PDF. Try exporting it again or upload a DOCX.") from exc
     elif ext == ".docx":
+        if Document is None:
+            raise ResumeError("DOCX support is not installed (missing 'python-docx'). Upload a PDF or TXT instead.")
         try:
             doc = Document(io.BytesIO(data))
         except Exception as exc:
@@ -301,7 +321,7 @@ def friendly_error(exc: Exception) -> str:
     """Turn an exception into a short message that never exposes the API key."""
     if isinstance(exc, (ResumeError, AnalysisError)):
         return str(exc)
-    if isinstance(exc, genai_errors.APIError):
+    if genai_errors is not None and isinstance(exc, genai_errors.APIError):
         code = getattr(exc, "code", None)
         message = str(getattr(exc, "message", "") or exc).lower()
         if code in (401, 403) or "api key" in message or "api_key" in message:
@@ -439,6 +459,17 @@ def main() -> None:
     st.set_page_config(page_title="ATS Resume Checker", page_icon="📄", layout="wide")
     st.title("📄 ATS Resume Checker")
     st.write("Upload your resume to get an estimated ATS score and specific ways to improve it.")
+
+    if MISSING_PACKAGES:
+        st.error(
+            "Some required packages are not installed: **" + ", ".join(MISSING_PACKAGES) + "**.\n\n"
+            "This means the host did not install your `requirements.txt`. Make sure the file is named "
+            "exactly `requirements.txt`, is saved as UTF-8, sits next to `app.py` (or in the repo root), "
+            "contains the packages below, then push to GitHub and reboot the app."
+        )
+        st.code("streamlit>=1.40.0\ngoogle-genai>=1.0.0\npypdf>=5.0.0\npython-docx>=1.1.0\ncryptography>=42.0.0")
+        if genai is None:  # the AI client is essential; PDF/DOCX gaps are handled per file type
+            st.stop()
 
     with st.sidebar:
         st.header("Settings")
